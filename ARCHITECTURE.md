@@ -1,8 +1,7 @@
-# ATLAS HS Classifier — Architecture
+# ATLAS HS Classifier: Architecture
 
 > **Architecture document version**: v0.11.0 (current codebase)
 > **Status**: Project in standby (May 2026). Architecture reflects last shipped state.
-> **Replaces**: previous v0.5.0 architecture (Phase 2 mid-development). See git history for diffs.
 
 Architectural documentation following the C4 model (Simon Brown). Diagrams describe **the code as it is**, not the roadmap. Anything planned but not yet implemented (e.g. Stripe billing) is omitted on purpose.
 
@@ -39,7 +38,7 @@ flowchart TB
 
 ## Containers (C4 Level 2)
 
-The system runs as two Railway services — a FastAPI web container and a scheduled garbage-collector container — backed by a single Supabase project that hosts both the relational tables and three pgvector stores. PDFs never leave the Railway compute boundary: they are Fernet-encrypted on the container's local filesystem and deleted by the GC after the GDPR retention window. Every authenticated HTML request flows through a consent gate that enforces the current Terms (v1.0) and Privacy (v1.1) versions before serving any dashboard route. The LangGraph orchestrator is in-process inside the FastAPI container, with state checkpointed to Postgres at every node boundary.
+The system runs as two Railway services (a FastAPI web container and a scheduled garbage-collector container) backed by a single Supabase project that hosts both the relational tables and three pgvector stores. PDFs never leave the Railway compute boundary: they are Fernet-encrypted on the container's local filesystem and deleted by the GC after the GDPR retention window. Every authenticated HTML request flows through a consent gate that enforces the current Terms (v1.0) and Privacy (v1.1) versions before serving any dashboard route. The LangGraph orchestrator is in-process inside the FastAPI container, with state checkpointed to Postgres at every node boundary.
 
 ```mermaid
 flowchart TB
@@ -85,7 +84,7 @@ flowchart TB
 
 ## Pipeline Components (C4 Level 3)
 
-The LangGraph orchestrator runs **seven nodes** along a linear path broken by two human gates. The first interrupt (`ocr_review`) lets the operator correct OCR extraction before any LLM cost is incurred; the second (`hitl_interrupt`) reviews or corrects the final classification. The `classifier_generator ↔ classification_evaluator` feedback loop is bounded by a circuit breaker at three cycles — beyond that, the state is force-routed to `hitl_interrupt` regardless of the evaluator's verdict, as a last-resort defence against runaway LLM costs. Confirmed corrections are written back to `rag_tenant_memory` (tenant-isolated by `tenant_id`), so the next classification for the same tenant retrieves its own past corrections during RAG enrichment.
+The LangGraph orchestrator runs **seven nodes** along a linear path broken by two human gates. The first interrupt (`ocr_review`) lets the operator correct OCR extraction before any LLM cost is incurred; the second (`hitl_interrupt`) reviews or corrects the final classification. The `classifier_generator ↔ classification_evaluator` feedback loop is bounded by a circuit breaker at three cycles; beyond that, the state is force-routed to `hitl_interrupt` regardless of the evaluator's verdict, as a last-resort defence against runaway LLM costs. Confirmed corrections are written back to `rag_tenant_memory` (tenant-isolated by `tenant_id`), so the next classification for the same tenant retrieves its own past corrections during RAG enrichment.
 
 ```mermaid
 flowchart LR
@@ -134,24 +133,13 @@ flowchart LR
 
 4. **PDFs are ephemeral and locally encrypted.** Uploads land on the Railway container filesystem under a per-tenant, per-session directory, Fernet-encrypted with a single key from `ENCRYPTION_KEY`. They never reach object storage. A separate Railway cron service runs a garbage-collector job daily, deletes files past `DATA_RETENTION_DAYS`, and offuscates PII in derived line items. Motivation: shrink the GDPR blast radius to one provider (Supabase EU) plus one ephemeral disk.
 
-5. **Tenant isolation via filtered vector search.** Queries against `rag_tenant_memory` are always filtered by `tenant_id`, backed by a composite index on that column. Shared stores (EBTI, CROSS) carry no tenant column — they are identical for every tenant. HITL-confirmed corrections are the only tenant-specific RAG content, and they are the progressive lock-in mechanism.
+5. **Tenant isolation via filtered vector search.** Queries against `rag_tenant_memory` are always filtered by `tenant_id`, backed by a composite index on that column. Shared stores (EBTI, CROSS) carry no tenant column; they are identical for every tenant. HITL-confirmed corrections are the only tenant-specific RAG content, and they are the progressive lock-in mechanism.
 
 6. **Three-layer cost guardrail.** Layer 1: circuit breaker on cycle count (architectural, never raise the cap). Layer 2: per-tenant daily token budget recorded in the `daily_token_usage` table, checked before every LLM call via a token-budget guard. Layer 3: provider-side spending caps (Groq $50/mo, OpenAI $20/mo). Each layer fails closed.
 
-7. **Consent gate as compliance middleware.** A consent guard on the dashboard router checks `tenant_users.terms_accepted_at` and the version columns against `current_terms_version` (1.0) and `current_privacy_version` (1.1). All authenticated HTML routes redirect to `/dashboard/legal/accept` when versions are out of sync. Bumping a version in settings forces re-acceptance on next login — no migration required.
+7. **Consent gate as compliance middleware.** A consent guard on the dashboard router checks `tenant_users.terms_accepted_at` and the version columns against `current_terms_version` (1.0) and `current_privacy_version` (1.1). All authenticated HTML routes redirect to `/dashboard/legal/accept` when versions are out of sync. Bumping a version in settings forces re-acceptance on next login; no migration required.
 
-8. **Two-channel auth, one token format.** Bearer JWT on `/api/v1/*` (programmatic), httpOnly cookie JWT on `/dashboard/*` (browser). The dashboard cookie is `Secure` only outside development environments. No third-party identity provider for MVP — JWT custom is two short files of well-understood code and a future migration to Supabase Auth is intentionally deferred.
-
-## Discrepancies fixed in this revision
-
-This revision corrects the v0.5.0 ARCHITECTURE.md to match the v0.11.0 codebase. Each correction was verified against the source files referenced in the audit notes above.
-
-1. **Pipeline is now 7 nodes, not 6.** `ocr_review` was added in Phase 2 between `ingestion_ocr` and `rag_enrichment`. It uses `interrupt()` so the operator can correct OCR errors before any LLM cost is incurred. The C4 L3 diagram now shows two distinct HITL gates.
-2. **PDF storage is the Railway container's local filesystem (Fernet-encrypted), not Supabase Storage.** The previous L2 diagram showed `Supabase Storage` as a container; that integration does not exist. Storage is local + ephemeral + GC'd daily.
-3. **Stripe removed.** Billing and the `subscriptions` table are Phase 3 work, not started. The previous L1 diagram and the ER schema both listed Stripe; both are gone.
-4. **`tenant_users`, not `users`.** The previous ER section used `users`. The actual table is `tenant_users`; the consent gate columns (`terms_accepted_at`, `terms_version`, `privacy_version`) live there.
-5. **TARIC removed from peer-system status.** Previously rendered as a peer external system to Groq/OpenAI. A TARIC lookup client exists in the codebase but is not imported by any graph node in the current code path. Listing it as a peer system was misleading. It is omitted until wired into the evaluator.
-6. **Added missing architectural elements.** Railway cron garbage-collector (separate service), consent gate middleware, and the Anthropic fallback wired conditionally on `ANTHROPIC_API_KEY`.
+8. **Two-channel auth, one token format.** Bearer JWT on `/api/v1/*` (programmatic), httpOnly cookie JWT on `/dashboard/*` (browser). The dashboard cookie is `Secure` only outside development environments. No third-party identity provider for MVP; JWT custom is two short files of well-understood code and a future migration to Supabase Auth is intentionally deferred.
 
 ## Tech Stack
 
@@ -171,4 +159,4 @@ This revision corrects the v0.5.0 ARCHITECTURE.md to match the v0.11.0 codebase.
 | Observability | structlog + Sentry | ≥24.4 / ≥2.19 | JSON logs to stdout; FastAPI + Httpx integrations on Sentry |
 | Rate limiting | slowapi | ≥0.1.9 | 60/min default, per IP at the edge |
 | Validation | Pydantic v2 + pydantic-settings | ≥2.10 / ≥2.7 | Models cross node boundaries; settings loaded from `.env` |
-| Deploy | Railway (FastAPI + cron) | — | Two services: web container + scheduled GC at 03:00 UTC daily |
+| Deploy | Railway (FastAPI + cron) | n/a | Two services: web container + scheduled GC at 03:00 UTC daily |
