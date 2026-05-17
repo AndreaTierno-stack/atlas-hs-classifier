@@ -71,7 +71,7 @@ flowchart TB
     orch -.->|"fallback"| anthropic
     orch -->|"embeddings"| openai
     gc -->|"delete expired PDFs"| pdf
-    gc -->|"offuscate PII · write audit_log"| db
+    gc -->|"purge checkpoints · mark PII-offuscated"| db
     api -.->|"errors"| sentry
 
     classDef system fill:#0F1A2E,color:#fff,stroke:#0F1A2E
@@ -139,7 +139,7 @@ flowchart LR
 
 7. **Consent gate as compliance middleware.** A consent guard on the dashboard router checks `tenant_users.terms_accepted_at` and the version columns against `current_terms_version` (1.0) and `current_privacy_version` (1.1). All authenticated HTML routes redirect to `/dashboard/legal/accept` when versions are out of sync. Bumping a version in settings forces re-acceptance on next login; no migration required.
 
-8. **Two-channel auth, one token format.** Bearer JWT on `/api/v1/*` (programmatic), httpOnly cookie JWT on `/dashboard/*` (browser). The dashboard cookie is `Secure` only outside development environments. No third-party identity provider for MVP; JWT custom is two short files of well-understood code and a future migration to Supabase Auth is intentionally deferred.
+8. **Two-channel auth, one token format.** Bearer JWT on `/api/v1/*` (programmatic), httpOnly cookie JWT on `/dashboard/*` (browser). The dashboard cookie is `Secure` only outside development environments. No third-party identity provider for MVP; JWT custom is two short files of well-understood code and a future migration to Supabase Auth is intentionally deferred. Note: the admin role exists in the `tenant_users` schema and a dedicated `/api/v1/admin/*` endpoint surface is defined, but admin-only authorization middleware is not yet enforced at the v0.11.0 baseline. Admin gating is a deferred Phase 3 item.
 
 ## Tech Stack
 
