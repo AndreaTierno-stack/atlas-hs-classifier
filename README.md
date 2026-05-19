@@ -22,7 +22,7 @@ What sets it apart from a generic LLM wrapper: human-in-the-loop is architectura
 
 ## Demo
 
-- LinkedIn carousel walkthrough: *[link forthcoming]*
+- LinkedIn carousel walkthrough: https://www.linkedin.com/feed/update/urn:li:ugcPost:7462554826187440128/
 
 ## Architecture at a glance
 
